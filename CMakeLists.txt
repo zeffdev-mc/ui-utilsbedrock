@@ -48,6 +48,12 @@ if(NOT TARGET fmt::fmt)
     list(APPEND PP_DEPS fmt)
 endif()
 
+FetchContent_Declare(imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG v1.91.9
+    GIT_SHALLOW TRUE)
+list(APPEND PP_DEPS imgui)
+
 if(PP_DEPS)
     FetchContent_MakeAvailable(${PP_DEPS})
 endif()
@@ -70,7 +76,22 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/out/${PP_OUTPUT_ABI}")
 
 find_library(PP_LOG_LIB log)
 
-add_library(packet_pause SHARED src/PacketPause.cpp)
+add_library(pp_imgui STATIC
+    "${imgui_SOURCE_DIR}/imgui.cpp"
+    "${imgui_SOURCE_DIR}/imgui_draw.cpp"
+    "${imgui_SOURCE_DIR}/imgui_tables.cpp"
+    "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
+    "${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp")
+target_include_directories(pp_imgui PUBLIC
+    "${imgui_SOURCE_DIR}"
+    "${imgui_SOURCE_DIR}/backends")
+target_compile_definitions(pp_imgui PUBLIC IMGUI_IMPL_OPENGL_ES3)
+set_target_properties(pp_imgui PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_options(pp_imgui PRIVATE -fvisibility=hidden)
+
+add_library(packet_pause SHARED
+    src/PacketPause.cpp
+    src/ImGuiOverlay.cpp)
 set_target_properties(packet_pause PROPERTIES OUTPUT_NAME "packet_pause")
 
 target_include_directories(packet_pause PRIVATE
@@ -82,6 +103,9 @@ target_link_libraries(packet_pause PRIVATE
     Boost::pfr
     magic_enum::magic_enum
     fmt::fmt
+    pp_imgui
+    EGL
+    GLESv3
     preloader)
 
 if(PP_LOG_LIB)
