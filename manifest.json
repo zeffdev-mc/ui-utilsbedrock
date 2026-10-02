@@ -1,0 +1,8 @@
+{
+  "type": "preload-native",
+  "name": "Packet Pause",
+  "author": "Raff",
+  "version": "0.1.0",
+  "entry": "libpacket_pause.so",
+  "minecraft_versions": []
+}

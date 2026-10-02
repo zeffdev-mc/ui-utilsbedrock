@@ -1,0 +1,53 @@
+name: Build PacketPause
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do mod
+        uses: actions/checkout@v4
+
+      - name: Checkout do preloader-android
+        uses: actions/checkout@v4
+        with:
+          repository: LiteLDev/preloader-android
+          path: preloader-android
+          submodules: recursive
+
+      - name: Ferramentas
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build zip
+
+      - name: Configurar (CMake + NDK, arm64-v8a)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPRELOADER_ANDROID_ROOT="$GITHUB_WORKSPACE/preloader-android"
+
+      - name: Compilar
+        run: cmake --build build --target packet_pause
+
+      - name: Empacotar .levipack
+        run: |
+          SO=$(find build -name libpacket_pause.so | head -n 1)
+          echo "Biblioteca: $SO"
+          mkdir dist
+          cp manifest.json dist/
+          cp "$SO" dist/
+          cd dist
+          zip PacketPause.levipack manifest.json libpacket_pause.so
+
+      - name: Publicar artefato
+        uses: actions/upload-artifact@v4
+        with:
+          name: PacketPause
+          path: dist/PacketPause.levipack
