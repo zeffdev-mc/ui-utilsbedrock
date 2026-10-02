@@ -4,11 +4,11 @@
 //   x0 = this (NetworkSystem), x1 = NetworkIdentifier const&,
 //   x2 = Packet const&,        x3 = std::string const* (bytes ja serializados)
 //
-// Modos (botoes do HUD do Mod Menu):
-//   PAUSE   - segura os pacotes numa fila; ao desligar, envia tudo de uma vez, em ordem
-//   CANCEL  - descarta os pacotes
-//   NOCLOSE - descarta so o ContainerClose (fechar menu sem avisar o servidor)
-//   FLUSH   - envia a fila agora, sem desligar o PAUSE
+// Modos (menu ImGui, ver ImGuiOverlay.cpp):
+//   Delay-Packets              - segura os pacotes numa fila; ao desligar, envia tudo de uma vez, em ordem
+//   Cancel-Packets             - descarta os pacotes
+//   Close without send packets - descarta so o ContainerClose (fechar menu sem avisar o servidor)
+//   Flush                      - envia a fila agora, sem desligar o Delay-Packets
 
 #include <algorithm>
 #include <atomic>
@@ -20,7 +20,6 @@
 #include <mutex>
 #include <sstream>
 #include <string>
-#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -28,19 +27,23 @@
 #include <link.h>
 
 #include <pl/Mod.hpp>
-#include <pl/ModMenu.hpp>
 #include <pl/memory/Hook.hpp>
 
-namespace {
+#include "Shared.hpp"
 
-// ---------------------------------------------------------------- constantes
-constexpr const char *kModuleId = "packet_pause.module";
-constexpr const char *kPauseBtn = "packet_pause.btn_pause";
-constexpr const char *kCancelBtn = "packet_pause.btn_cancel";
-constexpr const char *kNoCloseBtn = "packet_pause.btn_noclose";
-constexpr const char *kFlushBtn = "packet_pause.btn_flush";
-constexpr const char *kKeepMoveKey = "keepMove";
-constexpr const char *kLogIdsKey = "logIds";
+namespace pp {
+
+// ------------------------------------------------------------- estado publico
+std::atomic_bool gPause{false};
+std::atomic_bool gCancel{false};
+std::atomic_bool gNoClose{false};
+std::atomic_bool gFlushReq{false};
+std::atomic_bool gKeepMove{false};
+std::atomic_bool gLogIds{true};
+std::atomic<size_t> gQueued{0};
+ll::mod::NativeMod *gMod = nullptr;
+
+namespace {
 
 // Assinatura de 0xc642bf4 (gerada pelo Zaphkiel, unica na build analisada).
 constexpr const char *kSignature =
@@ -58,18 +61,9 @@ constexpr uint32_t kIdContainerClose = 47;
 constexpr uint32_t kIdPlayerAuthInput = 144;
 constexpr uint32_t kIdNetworkStackLatency = 115;
 
-// ------------------------------------------------------------------- estado
 using SendFn = void (*)(void *, const void *, const void *, const std::string *);
 
 SendFn gOrig = nullptr;
-ll::mod::NativeMod *gMod = nullptr;
-
-std::atomic_bool gPause{false};
-std::atomic_bool gCancel{false};
-std::atomic_bool gNoClose{false};
-std::atomic_bool gFlushReq{false};
-std::atomic_bool gKeepMove{false};
-std::atomic_bool gLogIds{true};
 std::atomic<uint8_t> gSeen[1024];
 
 struct Item {
@@ -102,6 +96,7 @@ void drainQueue(void *self) {
   {
     std::lock_guard lock(gMutex);
     local.swap(gQueue);
+    gQueued = 0;
   }
   size_t sent = 0;
   size_t skipped = 0;
@@ -161,6 +156,7 @@ void detour(void *self, const void *netId, const void *pkt,
       {
         std::lock_guard lock(gMutex);
         gQueue.push_back(std::move(item));
+        gQueued = gQueue.size();
         overflow = gQueue.size() >= kMaxQueue;
       }
       if (overflow) {
@@ -258,17 +254,14 @@ const uint8_t *findTarget(const LibInfo &lib, const std::vector<int> &pat) {
   return nullptr;
 }
 
-bool parseBool(std::string_view v, bool fallback) {
-  if (v == "true" || v == "1" || v == "on") {
-    return true;
-  }
-  if (v == "false" || v == "0" || v == "off") {
-    return false;
-  }
-  return fallback;
-}
+} // namespace
+} // namespace pp
 
 // ------------------------------------------------------------------------- mod
+namespace {
+
+using namespace pp;
+
 class PacketPause {
 public:
   static PacketPause &instance() {
@@ -286,55 +279,14 @@ public:
   }
 
   bool enable() {
-    auto &self = getSelf();
-
-    const bool moduleOk =
-        pl::modmenu::ModuleBuilder(kModuleId, "Packet Pause")
-            .modId(self.getId())
-            .description("Pausa, cancela e despeja pacotes enviados ao servidor.")
-            .defaultEnabled(true)
-            .onToggle(onModuleToggle)
-            .config(kKeepMoveKey, "Manter movimento (PlayerAuthInput)",
-                    pl::modmenu::ConfigType::Toggle, "false")
-            .config(kLogIdsKey, "Logar IDs de pacote", pl::modmenu::ConfigType::Toggle,
-                    "true")
-            .onConfigChanged(onConfigChanged)
-            .registerModule();
-
-    auto toggleButton = [](const char *id, const char *name, const char *label) {
-      return pl::modmenu::ButtonBuilder(id, name)
-          .moduleId(kModuleId)
-          .label(label)
-          .behavior(pl::modmenu::ButtonBehavior::Toggle)
-          .sizeScale(2.0f, 1.0f)
-          .onEvent(onButtonEvent)
-          .registerButton();
-    };
-
-    const bool b1 = moduleOk && toggleButton(kPauseBtn, "Packet Pause", "PAUSE");
-    const bool b2 = moduleOk && toggleButton(kCancelBtn, "Packet Cancel", "CANCEL");
-    const bool b3 =
-        moduleOk && toggleButton(kNoCloseBtn, "Close sem pacote", "NOCLOSE");
-    const bool b4 =
-        moduleOk && pl::modmenu::ButtonBuilder(kFlushBtn, "Flush")
-                        .moduleId(kModuleId)
-                        .label("FLUSH")
-                        .behavior(pl::modmenu::ButtonBehavior::Hold)
-                        .sizeScale(2.0f, 1.0f)
-                        .onEvent(onButtonEvent)
-                        .registerButton();
-
-    if (!(moduleOk && b1 && b2 && b3 && b4)) {
-      self.getLogger().error("Falha ao registrar menu/botoes: {} {} {} {} {}",
-                             moduleOk, b1, b2, b3, b4);
-    }
-
     mStop = false;
     mInstallThread = std::thread([this] { installLoop(); });
+    ui::install();
     return true;
   }
 
   bool disable() {
+    ui::uninstall();
     mStop = true;
     if (mInstallThread.joinable()) {
       mInstallThread.join();
@@ -347,16 +299,13 @@ public:
     {
       std::lock_guard lock(gMutex);
       gQueue.clear();
+      gQueued = 0;
     }
-    unregisterMenu();
     getSelf().getLogger().info("PacketPause desativado");
     return true;
   }
 
-  bool unload() {
-    unregisterMenu();
-    return true;
-  }
+  bool unload() { return true; }
 
 private:
   ll::mod::NativeMod &mSelf;
@@ -405,63 +354,6 @@ private:
       std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
     log.error("libminecraftpe.so nao encontrada");
-  }
-
-  static void onModuleToggle(std::string_view, bool enabled) {
-    if (!enabled) {
-      resetModes();
-      gFlushReq = true;
-    }
-  }
-
-  static void onConfigChanged(std::string_view moduleId, std::string_view key,
-                              std::string_view value) {
-    if (moduleId != kModuleId) {
-      return;
-    }
-    if (key == kKeepMoveKey) {
-      gKeepMove = parseBool(value, gKeepMove.load());
-    } else if (key == kLogIdsKey) {
-      gLogIds = parseBool(value, gLogIds.load());
-    }
-  }
-
-  static void onButtonEvent(std::string_view id, pl::modmenu::ButtonEvent ev,
-                            float value) {
-    using E = pl::modmenu::ButtonEvent;
-    if (id == kFlushBtn) {
-      if (ev == E::Down) {
-        gFlushReq = true;
-      }
-      return;
-    }
-    if (ev != E::StateChanged) {
-      return;
-    }
-    const bool on = value > 0.5f;
-    if (id == kPauseBtn) {
-      const bool was = gPause.exchange(on);
-      if (was && !on) {
-        gFlushReq = true; // desligou o pause: manda tudo de uma vez
-      }
-    } else if (id == kCancelBtn) {
-      gCancel = on;
-    } else if (id == kNoCloseBtn) {
-      gNoClose = on;
-    } else {
-      return;
-    }
-    if (gMod) {
-      gMod->getLogger().info("botao {} -> {}", id, on ? "ligado" : "desligado");
-    }
-  }
-
-  static void unregisterMenu() {
-    pl::modmenu::unregisterButton(kPauseBtn);
-    pl::modmenu::unregisterButton(kCancelBtn);
-    pl::modmenu::unregisterButton(kNoCloseBtn);
-    pl::modmenu::unregisterButton(kFlushBtn);
-    pl::modmenu::unregisterModule(kModuleId);
   }
 };
 
