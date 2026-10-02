@@ -18,19 +18,17 @@ jobs:
     - name: Compilar .so para Linux (x86_64)
       run: g++ -O2 -fPIC -shared main.cpp -o libmeuarquivo_linux_x86_64.so
 
-    # 2. Configurar o Android NDK
-    - name: Instalar Android NDK
-      uses: nmdh/setup-ndk@v1
-      with:
-        ndk-version: r26b
-
-    # 3. Compilação para Android (arm64-v8a / 64-bit)
+    # 2. Compilação para Android usando o NDK oficial do próprio GitHub
     - name: Compilar .so para Android (arm64-v8a)
       run: |
-        $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++ \
+        # Encontra a pasta do NDK que já vem embutida no servidor do GitHub
+        NDK_PATH=$(ls -d /usr/local/lib/android/sdk/ndk/* | tail -1)
+        
+        # Executa o compilador do Android diretamente
+        $NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++ \
           -O2 -fPIC -shared main.cpp -o libmeuarquivo_android_arm64.so
 
-    # 4. Disponibilizar os dois arquivos para download
+    # 3. Disponibilizar os dois arquivos para download
     - name: Salvar arquivos .so (Artefato)
       uses: actions/upload-artifact@v4
       with:
