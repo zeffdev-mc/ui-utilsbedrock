@@ -44,7 +44,7 @@ jobs:
           cp manifest.json dist/
           cp "$SO" dist/
           cd dist
-          zip PacketPause.levipack manifest.json libpacket_pause.so
+          zip ui-utilsBE.levipack manifest.json libpacket_pause.so
 
       - name: Publicar artefato
         uses: actions/upload-artifact@v4
