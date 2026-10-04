@@ -160,22 +160,18 @@ void clearRect(int index) {
   gRects[index].valid = false;
 }
 
-bool toggleButton(const char *text, const char *id, bool on, float width) {
-  // O ID do botao fica fixo (##id); so o texto mostra [ON].
-  std::string label = text;
-  if (on) {
-    label += "  [ON]";
-  }
-  label += "##";
-  label += id;
+bool toggleButton(const std::string &text, const char *id, bool highlight,
+                  float width) {
+  // O ID do botao fica fixo (##id); so o texto e a cor mudam com o estado.
+  const std::string label = text + "##" + id;
 
-  if (on) {
+  if (highlight) {
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.55f, 0.25f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.65f, 0.30f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.10f, 0.45f, 0.20f, 1.0f));
   }
   const bool pressed = ImGui::Button(label.c_str(), ImVec2(width, 0.0f));
-  if (on) {
+  if (highlight) {
     ImGui::PopStyleColor(3);
   }
   return pressed;
@@ -211,21 +207,33 @@ void drawUi() {
 
   const float full = ImGui::GetContentRegionAvail().x;
 
-  if (toggleButton("Delay-Packets", "delay", gPause.load(), full)) {
-    const bool now = !gPause.load();
-    const bool was = gPause.exchange(now);
-    if (was && !now) {
+  // Delay Packets: false | true
+  const bool delay = gPause.load();
+  if (toggleButton(delay ? "Delay Packets: true" : "Delay Packets: false", "delay", delay,
+                   full)) {
+    const bool was = gPause.exchange(!delay);
+    if (was && delay) {
       gFlushReq = true; // desligou o delay: libera tudo de uma vez
     }
   }
-  if (toggleButton("Cancel-Packets", "cancel", gCancel.load(), full)) {
-    gCancel = !gCancel.load();
+
+  // Send Packets: true | false  (false = descarta os pacotes)
+  const bool cancel = gCancel.load();
+  if (toggleButton(cancel ? "Send Packets: false" : "Send Packets: true", "send", cancel,
+                   full)) {
+    gCancel = !cancel;
   }
+
+  // Libera a fila agora, sem desligar o Delay Packets
   if (ImGui::Button("Flush (releases delay packets)##flush", ImVec2(full, 0.0f))) {
     gFlushReq = true;
   }
-  if (toggleButton("Close without send packets", "noclose", gNoClose.load(), full)) {
-    gNoClose = !gNoClose.load();
+
+  // Close without Packet: fechar o menu sem avisar o servidor
+  const bool noClose = gNoClose.load();
+  if (toggleButton(noClose ? "Close without Packet  [ON]" : "Close without Packet",
+                   "noclose", noClose, full)) {
+    gNoClose = !noClose;
   }
 
   ImGui::Separator();
