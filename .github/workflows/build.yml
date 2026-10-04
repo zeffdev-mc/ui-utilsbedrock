@@ -1,4 +1,4 @@
-name: Build PacketPause
+name: Build Ui Utils Bedrock
 
 on:
   push:
@@ -49,5 +49,5 @@ jobs:
       - name: Publicar artefato
         uses: actions/upload-artifact@v4
         with:
-          name: PacketPause
-          path: dist/PacketPause.levipack
+          name: ui-utils
+          path: dist/ui-utilsBE.levipack
