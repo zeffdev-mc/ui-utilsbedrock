@@ -13,6 +13,7 @@
 
 #include <EGL/egl.h>
 #include <dlfcn.h>
+#include <unistd.h>
 
 #include <imgui.h>
 #include <imgui_impl_opengl3.h>
@@ -42,6 +43,29 @@ bool gCollapsed = false; // menu contraido (so a barra de cima)
 float gScaleSetting = 0.0f; // 0 = automatico
 float gAppliedScale = 0.0f;
 bool gFirstFrameLogged = false;
+
+// ------------------------------------------------------------ tema e fonte
+// Cores de destaque (RGBA). Edite aqui para trocar as cores do menu.
+struct Theme {
+  const char *name;
+  ImVec4 accent;
+};
+const Theme kThemes[] = {
+    {"Azul", ImVec4(0.20f, 0.55f, 0.95f, 1.0f)},
+    {"Verde", ImVec4(0.15f, 0.70f, 0.35f, 1.0f)},
+    {"Roxo", ImVec4(0.60f, 0.35f, 0.95f, 1.0f)},
+    {"Laranja", ImVec4(0.95f, 0.55f, 0.15f, 1.0f)},
+    {"Rosa", ImVec4(0.95f, 0.35f, 0.60f, 1.0f)},
+};
+constexpr int kThemeCount = static_cast<int>(sizeof(kThemes) / sizeof(kThemes[0]));
+int gTheme = 0;
+bool gThemeDirty = true;
+ImVec4 gAccent = kThemes[0].accent;
+
+// Fonte: tenta fontes do sistema Android; se nao achar, usa a padrao do ImGui.
+constexpr float kBakePx = 48.0f;  // tamanho em que a fonte e rasterizada
+constexpr float kTextPx = 14.0f;  // tamanho "base" do texto (multiplicado pela escala)
+bool gFontTtf = false;
 
 // Retangulos do menu (para decidir se o toque e do menu ou do jogo).
 struct Rect {
@@ -155,15 +179,20 @@ void storeRect(int index) {
   gRects[index] = {p.x, p.y, s.x, s.y, true};
 }
 
+ImVec4 tint(const ImVec4 &c, float k) {
+  return ImVec4(std::min(c.x * k, 1.0f), std::min(c.y * k, 1.0f),
+                std::min(c.z * k, 1.0f), c.w);
+}
+
 bool toggleButton(const std::string &text, const char *id, bool highlight,
                   float width) {
   // O ID do botao fica fixo (##id); so o texto e a cor mudam com o estado.
   const std::string label = text + "##" + id;
 
   if (highlight) {
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.55f, 0.25f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.65f, 0.30f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.10f, 0.45f, 0.20f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Button, tint(gAccent, 0.85f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, tint(gAccent, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, tint(gAccent, 0.7f));
   }
   const bool pressed = ImGui::Button(label.c_str(), ImVec2(width, 0.0f));
   if (highlight) {
@@ -193,7 +222,7 @@ void drawUi() {
       barPos, ImVec2(barPos.x + full, barPos.y + barH),
       ImGui::GetColorU32(ImGuiCol_TitleBgActive), ImGui::GetStyle().WindowRounding * 0.5f);
   ImGui::AlignTextToFramePadding();
-  ImGui::Text("  Packet Pause");
+  ImGui::Text("  Ui Utils");
   ImGui::SameLine(ImGui::GetStyle().WindowPadding.x + full - barH);
   if (ImGui::ArrowButton("##collapse", gCollapsed ? ImGuiDir_Right : ImGuiDir_Down)) {
     gCollapsed = !gCollapsed;
@@ -255,19 +284,88 @@ void drawUi() {
     gScaleSetting = sc;
   }
 
+  ImGui::Text("Tema");
+  const float swatch = ImGui::GetFrameHeight();
+  for (int i = 0; i < kThemeCount; ++i) {
+    ImGui::SameLine();
+    const std::string id = "##theme" + std::to_string(i);
+    if (ImGui::ColorButton(id.c_str(), kThemes[i].accent,
+                           ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop |
+                               ImGuiColorEditFlags_NoBorder,
+                           ImVec2(swatch, swatch))) {
+      gTheme = i;
+      gThemeDirty = true;
+    }
+  }
+
   storeRect(0);
   ImGui::End();
 }
 
-void applyScale(float s) {
+void applyStyle(float sc, int themeIndex) {
+  themeIndex = std::clamp(themeIndex, 0, kThemeCount - 1);
+  const ImVec4 a = kThemes[themeIndex].accent;
+  gAccent = a;
+
   ImGuiStyle style;
   ImGui::StyleColorsDark(&style);
-  style.ScaleAllSizes(s);
-  style.WindowRounding = 6.0f * s;
-  style.FrameRounding = 4.0f * s;
+
+  style.WindowRounding = 12.0f;
+  style.FrameRounding = 8.0f;
+  style.GrabRounding = 8.0f;
+  style.WindowBorderSize = 0.0f;
+  style.FrameBorderSize = 0.0f;
+  style.WindowPadding = ImVec2(12.0f, 12.0f);
+  style.FramePadding = ImVec2(10.0f, 8.0f);
+  style.ItemSpacing = ImVec2(8.0f, 8.0f);
+  style.GrabMinSize = 18.0f;
+  style.ScaleAllSizes(sc);
+
+  ImVec4 *c = style.Colors;
+  c[ImGuiCol_Text] = ImVec4(0.93f, 0.94f, 0.97f, 1.0f);
+  c[ImGuiCol_WindowBg] = ImVec4(0.07f, 0.08f, 0.11f, 0.92f);
+  c[ImGuiCol_FrameBg] = ImVec4(0.14f, 0.15f, 0.20f, 1.0f);
+  c[ImGuiCol_FrameBgHovered] = tint(a, 0.45f);
+  c[ImGuiCol_FrameBgActive] = tint(a, 0.60f);
+  c[ImGuiCol_TitleBgActive] = tint(a, 0.55f); // barra de cima do menu
+  c[ImGuiCol_Button] = ImVec4(0.17f, 0.19f, 0.26f, 1.0f);
+  c[ImGuiCol_ButtonHovered] = tint(a, 0.65f);
+  c[ImGuiCol_ButtonActive] = tint(a, 0.85f);
+  c[ImGuiCol_CheckMark] = a;
+  c[ImGuiCol_SliderGrab] = a;
+  c[ImGuiCol_SliderGrabActive] = tint(a, 1.2f);
+  c[ImGuiCol_Separator] = ImVec4(1.0f, 1.0f, 1.0f, 0.12f);
+
   ImGui::GetStyle() = style;
-  ImGui::GetIO().FontGlobalScale = s;
-  gAppliedScale = s;
+  // Com fonte TTF (rasterizada em kBakePx) a escala e relativa a kTextPx.
+  ImGui::GetIO().FontGlobalScale = sc * (gFontTtf ? kTextPx / kBakePx : 1.0f);
+  gAppliedScale = sc;
+}
+
+void loadFont(ImGuiIO &io) {
+  static const char *kFontPaths[] = {
+      "/system/fonts/Roboto-Regular.ttf",
+      "/system/fonts/NotoSans-Regular.ttf",
+      "/system/fonts/DroidSans.ttf",
+  };
+  for (const char *path : kFontPaths) {
+    if (access(path, R_OK) != 0) {
+      continue;
+    }
+    ImFontConfig cfg;
+    cfg.OversampleH = 2;
+    cfg.OversampleV = 2;
+    if (io.Fonts->AddFontFromFileTTF(path, kBakePx, &cfg)) {
+      gFontTtf = true;
+      if (gMod) {
+        gMod->getLogger().info("fonte carregada: {}", path);
+      }
+      return;
+    }
+  }
+  if (gMod) {
+    gMod->getLogger().info("fonte do sistema nao encontrada, usando a padrao do ImGui");
+  }
 }
 
 // ---------------------------------------------------------------- render
@@ -290,6 +388,7 @@ void renderFrame(EGLDisplay dpy, EGLSurface surf) {
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
     io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+    loadFont(io);
     gLastFrame = std::chrono::steady_clock::now();
   }
   ImGui::SetCurrentContext(gImCtx);
@@ -312,8 +411,9 @@ void renderFrame(EGLDisplay dpy, EGLSurface surf) {
   const float wanted = gScaleSetting > 0.0f
                            ? gScaleSetting
                            : std::clamp(static_cast<float>(h) / 600.0f, 1.5f, 4.0f);
-  if (wanted != gAppliedScale) {
-    applyScale(wanted);
+  if (wanted != gAppliedScale || gThemeDirty) {
+    applyStyle(wanted, gTheme);
+    gThemeDirty = false;
   }
 
   const auto now = std::chrono::steady_clock::now();
