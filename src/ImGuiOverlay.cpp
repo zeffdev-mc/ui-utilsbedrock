@@ -38,7 +38,7 @@ ImGuiContext *gImCtx = nullptr;
 EGLContext gGlCtx = EGL_NO_CONTEXT;
 bool gBackendReady = false;
 std::chrono::steady_clock::time_point gLastFrame{};
-bool gOpen = false;
+bool gCollapsed = false; // menu contraido (so a barra de cima)
 float gScaleSetting = 0.0f; // 0 = automatico
 float gAppliedScale = 0.0f;
 bool gFirstFrameLogged = false;
@@ -49,7 +49,7 @@ struct Rect {
   bool valid{};
 };
 std::mutex gRectMutex;
-Rect gRects[2];
+Rect gRects[1];
 
 // Fila de eventos de toque (callback de toque -> thread de render).
 struct Ev {
@@ -155,11 +155,6 @@ void storeRect(int index) {
   gRects[index] = {p.x, p.y, s.x, s.y, true};
 }
 
-void clearRect(int index) {
-  std::lock_guard lock(gRectMutex);
-  gRects[index].valid = false;
-}
-
 bool toggleButton(const std::string &text, const char *id, bool highlight,
                   float width) {
   // O ID do botao fica fixo (##id); so o texto e a cor mudam com o estado.
@@ -179,33 +174,39 @@ bool toggleButton(const std::string &text, const char *id, bool highlight,
 
 void drawUi() {
   const float scale = gAppliedScale > 0.0f ? gAppliedScale : 1.0f;
+  const float fontSize = ImGui::GetFontSize();
+  const float full = fontSize * 20.0f; // largura util do painel
 
-  // Botao pequeno que abre/fecha o painel (sempre visivel).
   ImGui::SetNextWindowPos(ImVec2(12.0f * scale, 70.0f * scale), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowBgAlpha(0.65f);
-  ImGui::Begin("##pp_chip", nullptr,
-               ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                   ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse |
-                   ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings);
-  if (ImGui::Button(gOpen ? "PP  -" : "PP")) {
-    gOpen = !gOpen;
-  }
-  storeRect(0);
-  ImGui::End();
+  ImGui::SetNextWindowBgAlpha(0.88f);
+  ImGui::Begin("##pp_main", nullptr,
+               ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+                   ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_AlwaysAutoResize |
+                   ImGuiWindowFlags_NoSavedSettings);
 
-  if (!gOpen) {
-    clearRect(1);
+  // Barra de cima: arraste o menu por ela; a seta no canto contrai/expande.
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                      ImVec2(fontSize * 0.5f, fontSize * 0.45f));
+  const float barH = ImGui::GetFrameHeight();
+  const ImVec2 barPos = ImGui::GetCursorScreenPos();
+  ImGui::GetWindowDrawList()->AddRectFilled(
+      barPos, ImVec2(barPos.x + full, barPos.y + barH),
+      ImGui::GetColorU32(ImGuiCol_TitleBgActive), ImGui::GetStyle().WindowRounding * 0.5f);
+  ImGui::AlignTextToFramePadding();
+  ImGui::Text("  Packet Pause");
+  ImGui::SameLine(ImGui::GetStyle().WindowPadding.x + full - barH);
+  if (ImGui::ArrowButton("##collapse", gCollapsed ? ImGuiDir_Right : ImGuiDir_Down)) {
+    gCollapsed = !gCollapsed;
+  }
+  ImGui::PopStyleVar();
+
+  if (gCollapsed) {
+    storeRect(0);
+    ImGui::End();
     return;
   }
 
-  ImGui::SetNextWindowPos(ImVec2(12.0f * scale, 150.0f * scale), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 21.0f, 0.0f),
-                           ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowBgAlpha(0.88f);
-  ImGui::Begin("Packet Pause", &gOpen,
-               ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings);
-
-  const float full = ImGui::GetContentRegionAvail().x;
+  ImGui::Spacing();
 
   // Delay Packets: false | true
   const bool delay = gPause.load();
@@ -248,12 +249,13 @@ void drawUi() {
     gLogIds = logIds;
   }
 
-  float s = gScaleSetting > 0.0f ? gScaleSetting : gAppliedScale;
-  if (ImGui::SliderFloat("Escala", &s, 1.0f, 4.0f, "%.1f")) {
-    gScaleSetting = s;
+  float sc = gScaleSetting > 0.0f ? gScaleSetting : gAppliedScale;
+  ImGui::SetNextItemWidth(full * 0.6f);
+  if (ImGui::SliderFloat("Escala", &sc, 1.0f, 4.0f, "%.1f")) {
+    gScaleSetting = sc;
   }
 
-  storeRect(1);
+  storeRect(0);
   ImGui::End();
 }
 
