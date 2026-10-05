@@ -14,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -25,6 +26,7 @@
 #include <vector>
 
 #include <link.h>
+#include <unwind.h>
 
 #include <pl/Mod.hpp>
 #include <pl/memory/Hook.hpp>
@@ -65,6 +67,50 @@ using SendFn = void (*)(void *, const void *, const void *, const std::string *)
 
 SendFn gOrig = nullptr;
 std::atomic<uint8_t> gSeen[1024];
+
+// Rastreador: mostra de onde o jogo envia o ContainerClose (fechar menu).
+// Imprime RVAs (endereco - base do libminecraftpe.so) para analisar no Zaphkiel.
+uintptr_t gLibBase = 0;
+std::atomic_int gTraceBudget{8};
+
+struct TraceState {
+  uintptr_t frames[24];
+  int count;
+};
+
+_Unwind_Reason_Code traceStep(_Unwind_Context *ctx, void *arg) {
+  auto *st = static_cast<TraceState *>(arg);
+  const uintptr_t ip = _Unwind_GetIP(ctx);
+  if (ip == 0) {
+    return _URC_END_OF_STACK;
+  }
+  if (st->count < 24) {
+    st->frames[st->count++] = ip;
+    return _URC_NO_REASON;
+  }
+  return _URC_END_OF_STACK;
+}
+
+void logTrace(uint32_t id, size_t len) {
+  if (!gMod || gLibBase == 0 || gTraceBudget.fetch_sub(1) <= 0) {
+    return;
+  }
+  TraceState st{};
+  _Unwind_Backtrace(traceStep, &st);
+
+  std::string out;
+  char buf[48];
+  for (int i = 0; i < st.count; ++i) {
+    const uintptr_t ip = st.frames[i];
+    if (ip >= gLibBase && ip - gLibBase < 0x20000000) {
+      std::snprintf(buf, sizeof(buf), " +0x%lx", static_cast<unsigned long>(ip - gLibBase));
+    } else {
+      std::snprintf(buf, sizeof(buf), " ext");
+    }
+    out += buf;
+  }
+  gMod->getLogger().info("trace id={} len={}:{}", id, len, out);
+}
 
 struct Item {
   void *self{};
@@ -133,6 +179,10 @@ void detour(void *self, const void *netId, const void *pkt,
 
   if (gLogIds.load() && id < 1024 && !gSeen[id].exchange(1) && gMod) {
     gMod->getLogger().info("first packet id={} len={}", id, data->size());
+  }
+
+  if (id == kIdContainerClose) {
+    logTrace(id, data->size());
   }
 
   const bool whitelisted =
@@ -335,6 +385,7 @@ private:
           log.error("assinatura nao encontrada (versao do jogo diferente?)");
           return;
         }
+        gLibBase = lib.base;
         log.info("alvo em base+0x{:x}",
                  reinterpret_cast<uintptr_t>(target) - lib.base);
 
